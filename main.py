@@ -7,7 +7,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # ================= CONFIG =================
-API_ID = 123456        # <-- your api id
+API_ID = "API_ID"        # <-- your api id
 API_HASH = "API_HASH"  # <-- your api hash
 BOT_TOKEN = "BOT_TOKEN"
 
