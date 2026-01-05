@@ -6,146 +6,133 @@ import shutil
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# ================= CONFIG =================
-API_ID = 22852603        # <-- your api id
-API_HASH = "505a27a08aac31787f203120dcbc255c"  # <-- your api hash
+# ============ CONFIG ============
+API_ID = 22852603
+API_HASH = "505a27a08aac31787f203120dcbc255c"
 BOT_TOKEN = "8242910847:AAEtjFQl5dBwswCHonJ4k4F3MECcgtMEa-A"
 
-DOWNLOAD_DIR = "downloads"
-TEMP_DIR = "temp"
-EXPORT_DIR = "exports"
+BASE = os.getcwd()
+DOWNLOAD_DIR = os.path.join(BASE, "downloads")
+TEMP_DIR = os.path.join(BASE, "temp")
+EXPORT_DIR = os.path.join(BASE, "exports")
 
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-os.makedirs(TEMP_DIR, exist_ok=True)
-os.makedirs(EXPORT_DIR, exist_ok=True)
+for d in (DOWNLOAD_DIR, TEMP_DIR, EXPORT_DIR):
+    os.makedirs(d, exist_ok=True)
 
 app = Client(
-    "instagram_unfollowers_detector",
+    "ig_unfollowers_detector",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-# ================= STATE =================
 USER_DATA = {}  # chat_id -> {"followers": set(), "following": set()}
 
-# ================= UTILS =================
+# ============ HELPERS ============
 def clean_temp():
     shutil.rmtree(TEMP_DIR, ignore_errors=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
 
-def extract_usernames(data):
+def extract_instagram_json(path):
+    """
+    Instagram followers/following JSON parser
+    """
     usernames = set()
-
-    def walk(obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k == "string_list_data" and isinstance(v, list):
-                    for i in v:
-                        if isinstance(i, dict) and "value" in i:
-                            usernames.add(i["value"])
-                elif k == "username" and isinstance(v, str):
-                    usernames.add(v)
-                else:
-                    walk(v)
-        elif isinstance(obj, list):
-            for i in obj:
-                walk(i)
-
-    walk(data)
-    return usernames
-
-def read_json(path):
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
 
-def read_csv(path):
-    usernames = set()
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if row:
-                usernames.add(row[0].strip())
+    if isinstance(data, list):
+        for item in data:
+            for s in item.get("string_list_data", []):
+                if "value" in s:
+                    usernames.add(s["value"])
     return usernames
 
-def detect_type(filename, usernames):
-    name = filename.lower()
-    if "following" in name:
-        return "following"
-    if "follower" in name:
-        return "followers"
-    # fallback
-    return "followers" if len(usernames) < 2000 else "following"
+def extract_csv(path):
+    users = set()
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.reader(f):
+            if row and row[0]:
+                users.add(row[0].strip())
+    return users
 
-def process_file(chat_id, path):
-    ext = path.lower()
+def process_zip(chat_id, zip_path):
+    clean_temp()
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(TEMP_DIR)
 
-    if ext.endswith(".json"):
-        data = read_json(path)
-        users = extract_usernames(data)
-        t = detect_type(path, users)
-        USER_DATA.setdefault(chat_id, {})[t] = users
+    followers = set()
+    following = set()
 
-    elif ext.endswith(".csv"):
-        users = read_csv(path)
-        t = detect_type(path, users)
-        USER_DATA.setdefault(chat_id, {})[t] = users
+    for root, _, files in os.walk(TEMP_DIR):
+        for f in files:
+            fp = os.path.join(root, f)
+            name = f.lower()
 
-    elif ext.endswith(".zip"):
-        with zipfile.ZipFile(path, "r") as z:
-            z.extractall(TEMP_DIR)
-
-        for root, _, files in os.walk(TEMP_DIR):
-            for f in files:
-                fp = os.path.join(root, f)
+            try:
                 if f.endswith(".json"):
-                    try:
-                        data = read_json(fp)
-                        users = extract_usernames(data)
-                        t = detect_type(f, users)
-                        USER_DATA.setdefault(chat_id, {})[t] = users
-                    except:
-                        pass
-                elif f.endswith(".csv"):
-                    users = read_csv(fp)
-                    t = detect_type(f, users)
-                    USER_DATA.setdefault(chat_id, {})[t] = users
+                    users = extract_instagram_json(fp)
+                    if "follower" in name:
+                        followers |= users
+                    elif "following" in name:
+                        following |= users
 
-# ================= COMMANDS =================
+                elif f.endswith(".csv"):
+                    users = extract_csv(fp)
+                    if "follower" in name:
+                        followers |= users
+                    elif "following" in name:
+                        following |= users
+            except:
+                pass
+
+    if followers:
+        USER_DATA.setdefault(chat_id, {})["followers"] = followers
+    if following:
+        USER_DATA.setdefault(chat_id, {})["following"] = following
+
+# ============ COMMANDS ============
 @app.on_message(filters.command("start"))
 async def start(_, m: Message):
     await m.reply(
         "👋 **Instagram Unfollowers Detector**\n\n"
-        "📤 Upload ANY of these:\n"
-        "• followers.json\n"
-        "• following.json\n"
-        "• Instagram ZIP export\n"
-        "• CSV files\n\n"
-        "🤖 Bot auto-detects everything.\n"
-        "📄 After upload, use /unfollowers"
+        "📤 Upload **Instagram ZIP export**\n"
+        "or followers.json / following.json\n\n"
+        "🤖 Auto-detect enabled\n"
+        "📄 Then use /unfollowers"
     )
 
 @app.on_message(filters.document)
-async def handle_file(_, m: Message):
+async def file_handler(_, m: Message):
     chat_id = m.chat.id
-    clean_temp()
-
     path = await m.download(file_name=DOWNLOAD_DIR)
+
     try:
-        process_file(chat_id, path)
+        if path.endswith(".zip"):
+            process_zip(chat_id, path)
+        elif path.endswith(".json"):
+            users = extract_instagram_json(path)
+            key = "following" if "following" in path.lower() else "followers"
+            USER_DATA.setdefault(chat_id, {})[key] = users
+        elif path.endswith(".csv"):
+            users = extract_csv(path)
+            key = "following" if "following" in path.lower() else "followers"
+            USER_DATA.setdefault(chat_id, {})[key] = users
+
         await m.reply("✅ File processed successfully")
+
     except Exception as e:
-        await m.reply(f"⚠️ Error processing file: `{e}`")
+        await m.reply(f"⚠️ Error: `{e}`")
 
 @app.on_message(filters.command("unfollowers"))
 async def unfollowers(_, m: Message):
     chat_id = m.chat.id
-    data = USER_DATA.get(chat_id)
+    data = USER_DATA.get(chat_id, {})
 
-    if not data or "followers" not in data or "following" not in data:
+    if not data.get("followers") or not data.get("following"):
         return await m.reply(
             "❌ Missing data\n"
-            "Upload BOTH followers & following files"
+            "Upload Instagram ZIP or both files"
         )
 
     unf = sorted(data["following"] - data["followers"])
@@ -163,8 +150,7 @@ async def unfollowers(_, m: Message):
 @app.on_message(filters.command("reset"))
 async def reset(_, m: Message):
     USER_DATA.pop(m.chat.id, None)
-    await m.reply("♻️ Data reset. Upload files again.")
+    await m.reply("♻️ Reset done. Upload files again.")
 
-# ================= RUN =================
 print("🤖 Instagram Unfollowers Bot running...")
 app.run()
