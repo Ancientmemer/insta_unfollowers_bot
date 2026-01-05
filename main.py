@@ -7,9 +7,9 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # ================= CONFIG =================
-API_ID = "API_ID"        # <-- your api id
-API_HASH = "API_HASH"  # <-- your api hash
-BOT_TOKEN = "BOT_TOKEN"
+API_ID = 22852603        # <-- your api id
+API_HASH = "505a27a08aac31787f203120dcbc255c"  # <-- your api hash
+BOT_TOKEN = "8242910847:AAEtjFQl5dBwswCHonJ4k4F3MECcgtMEa-A"
 
 DOWNLOAD_DIR = "downloads"
 TEMP_DIR = "temp"
