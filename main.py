@@ -1,158 +1,132 @@
-import os, json, zipfile, shutil
+import os
+import json
+import zipfile
+import shutil
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-API_ID = 22852603
-API_HASH = "505a27a08aac31787f203120dcbc255c"
+API_ID = 22852603        # <-- your api id
+API_HASH = "505a27a08aac31787f203120dcbc255c"  # <-- your api hash
 BOT_TOKEN = "8242910847:AAEtjFQl5dBwswCHonJ4k4F3MECcgtMEa-A"
 
-app = Client("insta_unfollowers_bot",
-             api_id=API_ID,
-             api_hash=API_HASH,
-             bot_token=BOT_TOKEN)
+app = Client(
+    "insta_unfollowers_detector",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
-BASE = "user_data"
-os.makedirs(BASE, exist_ok=True)
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# ---------------- UTILS ----------------
+STATE = {}  # chat_id -> {"followers": set(), "following": set()}
 
-def udir(uid):
-    path = f"{BASE}/{uid}"
-    os.makedirs(path, exist_ok=True)
-    return path
-
-def extract(zipf, out):
-    with zipfile.ZipFile(zipf, "r") as z:
-        z.extractall(out)
-
-def find_all_json(root):
-    res = []
-    for r, _, f in os.walk(root):
-        for x in f:
-            if x.endswith(".json"):
-                res.append(os.path.join(r, x))
-    return res
-
-def parse_followers(path):
-    users = set()
-    data = json.load(open(path, encoding="utf-8"))
-
-    for item in data:
-        try:
-            users.add(item["string_list_data"][0]["value"])
-        except:
-            pass
-    return users
-
-def parse_following(path):
-    users = set()
-    data = json.load(open(path, encoding="utf-8"))
-
-    for item in data.get("relationships_following", []):
-        try:
-            users.add(item["string_list_data"][0]["value"])
-        except:
-            pass
-    return users
-
-# ---------------- START ----------------
-
+# ---------------- HELP ----------------
 @app.on_message(filters.command("start"))
-async def start(_, m):
+async def start(_, m: Message):
     await m.reply(
         "👋 **Instagram Unfollowers Detector**\n\n"
-        "📦 Upload **Instagram ZIP export**\n"
-        "🤖 Bot auto-detects followers & following\n\n"
-        "📌 Then use /unfollowers",
-        disable_web_page_preview=True
+        "📂 Upload:\n"
+        "• Instagram ZIP export\n"
+        "• followers.json\n"
+        "• following.json\n\n"
+        "🤖 Auto-detect enabled\n"
+        "➡️ Then use /unfollowers"
     )
 
 # ---------------- FILE HANDLER ----------------
-
 @app.on_message(filters.document)
-async def file_handler(_, m: Message):
-    uid = m.from_user.id
-    ud = udir(uid)
+async def handle_file(_, m: Message):
+    chat_id = m.chat.id
+    STATE[chat_id] = {"followers": set(), "following": set()}
 
-    await m.reply("⏳ Processing Instagram export...")
+    await m.reply("⏳ Processing file...")
 
-    file = await m.download(file_name=f"{ud}/{m.document.file_name}")
-
-    followers, following = set(), set()
+    path = await m.download(file_name=f"{DATA_DIR}/{m.document.file_name}")
 
     try:
-        if file.endswith(".zip"):
-            ext = f"{ud}/extract"
-            if os.path.exists(ext):
-                shutil.rmtree(ext)
-            os.makedirs(ext)
+        if path.endswith(".zip"):
+            process_zip(chat_id, path)
+        elif path.endswith(".json"):
+            process_json(chat_id, path)
+        else:
+            await m.reply("❌ Unsupported file format")
+            return
 
-            extract(file, ext)
-            jsons = find_all_json(ext)
-
-            for jf in jsons:
-                name = jf.lower()
-                if "followers_" in name:
-                    followers |= parse_followers(jf)
-                elif "following.json" in name:
-                    following |= parse_following(jf)
-
-        if not followers or not following:
-            return await m.reply(
-                "❌ Could not detect followers/following\n"
-                "Make sure this is **official Instagram ZIP export**"
-            )
-
-        json.dump(list(followers), open(f"{ud}/followers.json", "w"))
-        json.dump(list(following), open(f"{ud}/following.json", "w"))
-
-        await m.reply(
-            f"✅ Data loaded successfully\n\n"
-            f"👥 Followers: {len(followers)}\n"
-            f"➡️ Following: {len(following)}\n\n"
-            "📌 Now use /unfollowers"
-        )
+        await m.reply("✅ File processed successfully")
 
     except Exception as e:
         await m.reply(f"❌ Error: {e}")
 
+# ---------------- PROCESS ZIP ----------------
+def process_zip(chat_id, zip_path):
+    temp = f"{DATA_DIR}/temp_{chat_id}"
+    shutil.rmtree(temp, ignore_errors=True)
+    os.makedirs(temp)
+
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(temp)
+
+    base = os.path.join(
+        temp, "connections", "followers_and_following"
+    )
+
+    followers_path = os.path.join(base, "followers_1.json")
+    following_path = os.path.join(base, "following.json")
+
+    if os.path.exists(followers_path):
+        process_json(chat_id, followers_path)
+
+    if os.path.exists(following_path):
+        process_json(chat_id, following_path)
+
+    shutil.rmtree(temp, ignore_errors=True)
+
+# ---------------- PROCESS JSON ----------------
+def process_json(chat_id, json_path):
+    data = json.load(open(json_path))
+
+    # followers_*.json → LIST
+    if isinstance(data, list):
+        for item in data:
+            sld = item.get("string_list_data", [])
+            if sld and "value" in sld[0]:
+                STATE[chat_id]["followers"].add(sld[0]["value"])
+
+    # following.json → DICT
+    elif isinstance(data, dict):
+        items = data.get("relationships_following", [])
+        for item in items:
+            if "title" in item:
+                STATE[chat_id]["following"].add(item["title"])
+
 # ---------------- UNFOLLOWERS ----------------
-
 @app.on_message(filters.command("unfollowers"))
-async def unf(_, m):
-    uid = m.from_user.id
-    ud = udir(uid)
+async def unfollowers(_, m: Message):
+    chat_id = m.chat.id
+    if chat_id not in STATE:
+        return await m.reply("❌ Upload files first")
 
-    f1 = f"{ud}/followers.json"
-    f2 = f"{ud}/following.json"
+    followers = STATE[chat_id]["followers"]
+    following = STATE[chat_id]["following"]
 
-    if not os.path.exists(f1) or not os.path.exists(f2):
-        return await m.reply("❌ Upload Instagram ZIP first")
-
-    followers = set(json.load(open(f1)))
-    following = set(json.load(open(f2)))
+    if not followers or not following:
+        return await m.reply(
+            "❌ Missing data\n"
+            "Upload Instagram ZIP or both followers & following files"
+        )
 
     unf = sorted(following - followers)
 
     if not unf:
-        return await m.reply("✅ No unfollowers found")
+        return await m.reply("🎉 No unfollowers found!")
 
-    out = f"{ud}/unfollowers.txt"
-    with open(out, "w") as f:
-        for u in unf:
-            f.write(f"https://instagram.com/{u}\n")
+    text = "🚫 **Unfollowers List**\n\n"
+    for u in unf:
+        text += f"• [{u}](https://www.instagram.com/{u}/)\n"
 
-    msg = f"🔻 <b>Unfollowers ({len(unf)})</b>\n\n"
-    for u in unf[:20]:
-        msg += f"• <a href='https://instagram.com/{u}'>@{u}</a>\n"
-
-    if len(unf) > 20:
-        msg += f"\n… and {len(unf)-20} more"
-
-    await m.reply(msg, parse_mode="html", disable_web_page_preview=True)
-    await m.reply_document(out)
+    await m.reply(text, disable_web_page_preview=True)
 
 # ---------------- RUN ----------------
-
-print("🤖 Bot running...")
+print("🤖 Instagram Unfollowers Bot running...")
 app.run()
